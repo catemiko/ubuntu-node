@@ -101,16 +101,21 @@ jobs:
           container="pebble-smoke-${ARCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           host_layers="$(mktemp -d)"
           cp tests/pebble/001-smoke.yaml "${host_layers}/001-smoke.yaml"
+          # Pebble runs as UID 584792; mktemp directories default to mode 0700.
+          chmod 0755 "${host_layers}"
+          chmod 0644 "${host_layers}/001-smoke.yaml"
           cleanup() {
             status=${?}
             if (( status != 0 )); then
+              docker inspect "${container}" --format '{{json .State}}' || true
               docker logs "${container}" || true
             fi
             docker rm -f "${container}" >/dev/null 2>&1 || true
             rm -rf "${host_layers}"
           }
           trap cleanup EXIT
-          docker run --rm -d \
+          # Keep exited containers until cleanup so startup failures retain logs.
+          docker run -d \
             --name "${container}" \
             --platform "linux/${ARCH}" \
             --read-only --cap-drop=ALL --security-opt=no-new-privileges \
@@ -120,8 +125,13 @@ jobs:
             --mount "type=bind,src=${host_layers},dst=/usr/share/pebble/layers,readonly" \
             "${image}"
           ready=0
-          for attempt in {1..30}; do
-            if docker exec "${container}" /usr/bin/pebble check --refresh ready; then
+          for (( attempt = 1; attempt <= 30; attempt++ )); do
+            if [[ "$(docker inspect "${container}" --format '{{.State.Running}}')" != true ]]; then
+              echo 'Smoke-test container exited before becoming ready.' >&2
+              exit 1
+            fi
+            # A check stays "up" until its failure threshold; require a success.
+            if docker exec "${container}" /usr/bin/pebble check --refresh ready | grep -Eq '^successes: [1-9][0-9]*$'; then
               ready=1
               break
             fi

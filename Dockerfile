@@ -7,7 +7,8 @@ FROM ubuntu:${UBUNTU_VERSION} AS chiseled-rootfs
 ARG UBUNTU_VERSION="24.04"
 ARG CHISEL_VERSION="v1.5.1"
 ARG PEBBLE_VERSION="v1.33.2"
-ARG TARGETARCH="amd64"
+# Redeclare BuildKit's target architecture without overriding it for arm64 builds.
+ARG TARGETARCH
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 RUN apt-get update \
