@@ -1,0 +1,21 @@
+summary: Smoke-test application layer
+services:
+  app:
+    override: replace
+    summary: Minimal test HTTP server
+    command: /usr/local/bin/node /app/server.js
+    startup: enabled
+    working-dir: /app
+    on-success: shutdown
+    on-failure: shutdown
+    on-check-failure:
+      ready: restart
+checks:
+  ready:
+    override: replace
+    level: ready
+    period: 2s
+    timeout: 1s
+    threshold: 3
+    http:
+      url: http://127.0.0.1:18080/health

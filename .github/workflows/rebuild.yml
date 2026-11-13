@@ -1,0 +1,224 @@
+name: Build and publish Ubuntu 24.04 chiseled Node 24 to Docker Hub
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - tests/**
+      - .github/workflows/rebuild.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - tests/**
+      - .github/workflows/rebuild.yml
+  schedule:
+    # Every Monday at 05:17 UTC. Schedule operates on the default branch.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chiseled-node24-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Smoke test (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            node_arch: x64
+          - arch: arm64
+            node_arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU for ARM64 testing
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build architecture-specific test image (fresh inputs)
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --pull --no-cache \
+            --platform "linux/${ARCH}" \
+            --tag "node24-chiseled-test:${ARCH}" \
+            --load .
+
+      - name: Smoke-test Pebble entrypoint, Node runtime and read-only rootfs
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          NODE_ARCH: ${{ matrix.node_arch }}
+        run: |
+          set -euo pipefail
+          image="node24-chiseled-test:${ARCH}"
+          run() {
+            docker run --rm --platform "linux/${ARCH}" \
+              --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+              --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+              "${image}" "${@}"
+          }
+          pebble_version="$(sed -n 's/^ARG PEBBLE_VERSION="\(v[^"]*\)"$/\1/p' Dockerfile)"
+          test -n "${pebble_version}"
+          run version | grep -F "${pebble_version}"
+          run plan
+          run exec node --version | grep '^v24\.'
+          run exec node -e 'console.log("pebble exec works")' | grep 'pebble exec works'
+          docker run --rm --platform "linux/${ARCH}" \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+            -e "EXPECTED_ARCH=${NODE_ARCH}" \
+            "${image}" exec node -e "$(cat tests/smoke.js)"
+
+      - name: Smoke-test supervised Node service, logs and health
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          image="node24-chiseled-test:${ARCH}"
+          container="pebble-smoke-${ARCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            status=${?}
+            if (( status != 0 )); then
+              docker logs "${container}" || true
+            fi
+            docker rm -f "${container}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --rm -d \
+            --name "${container}" \
+            --platform "linux/${ARCH}" \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+            --mount "type=bind,src=${PWD}/tests/pebble,dst=/app,readonly" \
+            --mount "type=bind,src=${PWD}/tests/pebble,dst=/var/lib/pebble/default/layers,readonly" \
+            "${image}"
+          ready=0
+          for attempt in {1..30}; do
+            if docker exec "${container}" /usr/bin/pebble check --refresh ready; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "${ready}" -eq 1
+          docker exec "${container}" /usr/bin/pebble health
+          docker exec "${container}" /usr/bin/pebble checks
+          docker exec "${container}" /usr/bin/pebble services | grep -E 'app.*active'
+          docker exec "${container}" /usr/local/bin/node /app/http-check.js
+          docker exec "${container}" /usr/bin/pebble logs app
+
+  publish:
+    name: Publish signed multi-platform image to Docker Hub
+    # Never publish a workflow_dispatch from an updater/feature branch.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate Docker Hub repository configuration and compute tags
+        id: image
+        shell: bash
+        env:
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          # Docker Hub image name has exactly one namespace/repository separator.
+          image="$(printf '%s' "${DOCKERHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          if [[ ! "${image}" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo 'Set GitHub Actions variable DOCKERHUB_REPOSITORY to namespace/repository (lowercase).' >&2
+            exit 1
+          fi
+          day="$(date -u +%Y%m%d)"
+          echo "name=${image}" >> "${GITHUB_OUTPUT}"
+          {
+            echo 'tags<<EOF'
+            echo "${image}:24.04-node24"
+            echo "${image}:24.04-node24-${day}"
+            echo "${image}:24.04-node24-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push multi-arch manifest, SBOM and provenance
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Confirm AMD64 and ARM64 platforms were published
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}" | jq -e '
+            [.manifests[].platform | select(.os == "linux") | .architecture] |
+            (index("amd64") != null and index("arm64") != null)
+          '
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.0
+
+      - name: Sign the immutable multi-architecture image digest (OIDC)
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Show published digest
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "Published ${IMAGE}@${DIGEST}" >> "${GITHUB_STEP_SUMMARY}"

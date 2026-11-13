@@ -1,0 +1,99 @@
+name: Propose newer Pebble version
+
+on:
+  schedule:
+    # Weekly, after the image rebuild; GitHub schedules use UTC.
+    - cron: '43 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch Canonical Pebble latest stable release and artifact digests
+        id: pebble
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/canonical/pebble/releases/latest > /tmp/pebble-release.json
+          version="$(jq -r '.tag_name' /tmp/pebble-release.json)"
+          [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          for arch in amd64 arm64; do
+            asset="pebble_${version}_linux_${arch}.tar.gz"
+            digest="$(jq -r --arg asset "${asset}" \
+              '.assets[] | select(.name == $asset) | .digest // empty' \
+              /tmp/pebble-release.json)"
+            [[ "${digest}" =~ ^sha256:[[:xdigit:]]{64}$ ]]
+            echo "${arch}=${digest#sha256:}" >> "${GITHUB_OUTPUT}"
+          done
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Bump pinned version and architecture checksums
+        shell: bash
+        env:
+          NEW_VERSION: ${{ steps.pebble.outputs.version }}
+          SHA_AMD64: ${{ steps.pebble.outputs.amd64 }}
+          SHA_ARM64: ${{ steps.pebble.outputs.arm64 }}
+        run: |
+          python3 - <<'PYCODE'
+          import os
+          import re
+          from pathlib import Path
+
+          p = Path('Dockerfile')
+          original = p.read_text()
+          new_version = os.environ['NEW_VERSION']
+          updated, count = re.subn(
+              r'(?m)^ARG PEBBLE_VERSION="v[0-9]+\.[0-9]+\.[0-9]+"$',
+              f'ARG PEBBLE_VERSION="{new_version}"', original,
+          )
+          assert count == 1, 'Expected exactly one Pebble version pin'
+          for arch, key in [('amd64', 'SHA_AMD64'), ('arm64', 'SHA_ARM64')]:
+              pattern = rf"(?m)^      {arch}\) pebble_sha256='[0-9a-f]{{64}}' ;; \\$"
+              replacement = f"      {arch}) pebble_sha256='{os.environ[key]}' ;; \\"
+              updated, count = re.subn(pattern, lambda _match: replacement, updated)
+              assert count == 1, f'Expected exactly one {arch} checksum pin'
+          if original != updated:
+              p.write_text(updated)
+          PYCODE
+
+      - name: Open or update review PR
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: bump Canonical Pebble to ${{ steps.pebble.outputs.version }}'
+          title: 'chore: bump Canonical Pebble to ${{ steps.pebble.outputs.version }}'
+          body: |
+            Updates the Pebble binary version and both published release-asset SHA256s.
+            Review the upstream release notes and let the amd64/arm64 CI smoke tests finish before merging.
+            Source: https://github.com/canonical/pebble/releases
+          branch: automation/update-pebble
+          delete-branch: true
+          add-paths: |
+            Dockerfile
+
+      # GITHUB_TOKEN-created PRs do not emit pull_request workflow triggers.
+      # workflow_dispatch is exempt from that restriction; this verifies the
+      # proposal branch without publishing it (publish is main-only).
+      - name: Run multi-arch CI on the proposed Pebble branch
+        if: steps.pr.outputs.pull-request-number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run rebuild.yml --ref automation/update-pebble
