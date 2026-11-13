@@ -65,7 +65,7 @@ RUN set -eux; \
     chmod 0700 /rootfs/var/lib/pebble/default; \
     rm -f "/tmp/${filename}"
 
-FROM node:24-bookworm-slim AS node24
+FROM node:25-bookworm-slim AS node24
 
 FROM scratch
 LABEL org.opencontainers.image.title="Ubuntu 24.04 Chiseled Node.js 24 with Pebble" \
