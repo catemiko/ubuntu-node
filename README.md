@@ -26,7 +26,7 @@ This is not an official Ubuntu rock or Node.js image, and is not built with Rock
    The repository can be under a different organization namespace than the login identity; the token must have permission to push there. `DOCKERHUB_REPOSITORY` is validated before login/publishing. **Never commit the token**.
 4. Commit this repository to GitHub (default branch `main`) and enable GitHub Actions.
 5. Run **Actions → Build and publish Ubuntu 24.04 chiseled Node 24 to Docker Hub → Run workflow** on `main`. Pull requests and manual runs on non-`main` branches do not publish.
-6. On success, pull `catemiko/ubuntu-node:24.04-node24`. Check its digest in the job summary, and confirm the two-platform manifest using `docker buildx imagetools inspect`.
+6. On success, pull `catemiko/ubuntu-node:24-24.04`. Check its digest in the job summary, and confirm the two-platform manifest using `docker buildx imagetools inspect`.
 7. The workflow rebuilds **Mondays at 05:17 UTC** and on relevant `main` changes. Pull requests compile and test `linux/amd64` + `linux/arm64` without Docker Hub credentials.
 8. The separate **Propose newer Pebble version** workflow checks new stable Pebble releases Mondays at 06:43 UTC and opens a PR to refresh pinned versions and per-architecture digests; review and merge after CI. Enable **Allow GitHub Actions to create and approve pull requests** in GitHub Actions settings for the updater. Its workflow dispatches CI explicitly for GITHUB_TOKEN-created PRs; branches other than `main` never publish.
 
@@ -38,14 +38,14 @@ The publish job authenticates to Docker Hub via `docker/login-action`, pushes an
 
 For `DOCKERHUB_REPOSITORY=catemiko/ubuntu-node`:
 
-- `catemiko/ubuntu-node:24.04-node24` — moving stable tag
-- `catemiko/ubuntu-node:24.04-node24-YYYYMMDD` — UTC date tag (can be overwritten by a second run that day)
-- `catemiko/ubuntu-node:24.04-node24-run-RUN_ID-ATTEMPT` — unique GitHub run tag
+- `catemiko/ubuntu-node:24-24.04` — moving stable tag
+- `catemiko/ubuntu-node:24-24.04-YYYYMMDD` — UTC date tag (can be overwritten by a second run that day)
+- `catemiko/ubuntu-node:24-24.04-run-RUN_ID-ATTEMPT` — unique GitHub run tag
 
 ### Verify the published image
 
 ```bash
-IMAGE="catemiko/ubuntu-node:24.04-node24"
+IMAGE="catemiko/ubuntu-node:24-24.04"
 
 docker pull "${IMAGE}"
 docker run --rm "${IMAGE}" exec node --version
@@ -55,7 +55,7 @@ docker buildx imagetools inspect "${IMAGE}"
 docker run --rm --entrypoint /usr/local/bin/node "${IMAGE}" --version
 ```
 
-If the Docker Hub repository is private, authenticate before pulling (`docker login`). Publishing a base image to Docker Hub does **not** start a running application. Deploy applications using their own image built `FROM catemiko/ubuntu-node:24.04-node24` with a Pebble service layer (next section).
+If the Docker Hub repository is private, authenticate before pulling (`docker login`). Publishing a base image to Docker Hub does **not** start a running application. Deploy applications using their own image built `FROM catemiko/ubuntu-node:24-24.04` with a Pebble service layer (next section).
 
 ## The `ubuntu/python`-style CLI
 
@@ -68,7 +68,7 @@ ENTRYPOINT ["/usr/bin/pebble", "enter"]
 Run commands by passing them to `pebble enter`, exactly like Canonical's Python rock:
 
 ```bash
-IMAGE="catemiko/ubuntu-node:24.04-node24"
+IMAGE="catemiko/ubuntu-node:24-24.04"
 
 docker run --rm "${IMAGE}" version
 # -> Pebble version
@@ -95,7 +95,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY server.js ./server.js
 
-FROM catemiko/ubuntu-node:24.04-node24
+FROM catemiko/ubuntu-node:24-24.04
 COPY --from=build --chown=_daemon_:_daemon_ /app /app
 COPY 001-app.yaml /usr/share/pebble/layers/001-app.yaml
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \

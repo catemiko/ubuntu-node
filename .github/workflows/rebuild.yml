@@ -184,9 +184,9 @@ jobs:
           echo "name=${image}" >> "${GITHUB_OUTPUT}"
           {
             echo 'tags<<EOF'
-            echo "${image}:24.04-node24"
-            echo "${image}:24.04-node24-${day}"
-            echo "${image}:24.04-node24-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "${image}:24-24.04"
+            echo "${image}:24-24.04-${day}"
+            echo "${image}:24-24.04-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             echo 'EOF'
           } >> "${GITHUB_OUTPUT}"
 
