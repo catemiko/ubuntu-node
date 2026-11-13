@@ -58,7 +58,7 @@ RUN set -eux; \
     url="https://github.com/canonical/pebble/releases/download/${PEBBLE_VERSION}/${filename}"; \
     curl --fail --show-error --silent --location --retry 5 -o "/tmp/${filename}" "${url}"; \
     printf '%s  %s\n' "${pebble_sha256}" "/tmp/${filename}" | sha256sum --check -; \
-    mkdir -p /rootfs/usr/bin /rootfs/var/lib/pebble/default/layers; \
+    mkdir -p /rootfs/usr/bin /rootfs/usr/share/pebble/layers /rootfs/var/lib/pebble/default; \
     tar -xzf "/tmp/${filename}" -C /rootfs/usr/bin pebble; \
     chmod 0755 /rootfs/usr/bin/pebble; \
     chown 584792:584792 /rootfs/var/lib/pebble/default; \
@@ -78,6 +78,7 @@ ENV NODE_ENV="production" \
     PATH="/usr/local/bin:/usr/bin:/bin" \
     SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt" \
     PEBBLE="/var/lib/pebble/default" \
+    PEBBLE_COPY_ONCE="/usr/share/pebble" \
     PEBBLE_SOCKET="/tmp/.pebble.socket" \
     PEBBLE_PERSIST="never" \
     PEBBLE_VERBOSE="1"

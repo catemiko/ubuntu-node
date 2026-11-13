@@ -75,6 +75,7 @@ jobs:
             docker run --rm --platform "linux/${ARCH}" \
               --read-only --cap-drop=ALL --security-opt=no-new-privileges \
               --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+              --tmpfs /var/lib/pebble/default:rw,nosuid,nodev,size=16m,uid=584792,gid=584792,mode=0700 \
               "${image}" "${@}"
           }
           pebble_version="$(sed -n 's/^ARG PEBBLE_VERSION="\(v[^"]*\)"$/\1/p' Dockerfile)"
@@ -86,6 +87,7 @@ jobs:
           docker run --rm --platform "linux/${ARCH}" \
             --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+            --tmpfs /var/lib/pebble/default:rw,nosuid,nodev,size=16m,uid=584792,gid=584792,mode=0700 \
             -e "EXPECTED_ARCH=${NODE_ARCH}" \
             "${image}" exec node -e "$(cat tests/smoke.js)"
 
@@ -97,12 +99,15 @@ jobs:
           set -euo pipefail
           image="node24-chiseled-test:${ARCH}"
           container="pebble-smoke-${ARCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          host_layers="$(mktemp -d)"
+          cp tests/pebble/001-smoke.yaml "${host_layers}/001-smoke.yaml"
           cleanup() {
             status=${?}
             if (( status != 0 )); then
               docker logs "${container}" || true
             fi
             docker rm -f "${container}" >/dev/null 2>&1 || true
+            rm -rf "${host_layers}"
           }
           trap cleanup EXIT
           docker run --rm -d \
@@ -110,8 +115,9 @@ jobs:
             --platform "linux/${ARCH}" \
             --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+            --tmpfs /var/lib/pebble/default:rw,nosuid,nodev,size=16m,uid=584792,gid=584792,mode=0700 \
             --mount "type=bind,src=${PWD}/tests/pebble,dst=/app,readonly" \
-            --mount "type=bind,src=${PWD}/tests/pebble,dst=/var/lib/pebble/default/layers,readonly" \
+            --mount "type=bind,src=${host_layers},dst=/usr/share/pebble/layers,readonly" \
             "${image}"
           ready=0
           for attempt in {1..30}; do
@@ -122,6 +128,7 @@ jobs:
             sleep 1
           done
           test "${ready}" -eq 1
+          docker exec "${container}" /usr/bin/pebble plan | grep -F "command: /usr/local/bin/node /app/server.js"
           docker exec "${container}" /usr/bin/pebble health
           docker exec "${container}" /usr/bin/pebble checks
           docker exec "${container}" /usr/bin/pebble services | grep -E 'app.*active'

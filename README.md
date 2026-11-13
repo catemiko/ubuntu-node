@@ -97,7 +97,7 @@ COPY server.js ./server.js
 
 FROM catemiko/ubuntu-node:24.04-node24
 COPY --from=build --chown=_daemon_:_daemon_ /app /app
-COPY 001-app.yaml /var/lib/pebble/default/layers/001-app.yaml
+COPY 001-app.yaml /usr/share/pebble/layers/001-app.yaml
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
   CMD ["/usr/bin/pebble", "health"]
 ```
@@ -149,12 +149,13 @@ There is **no `npm`** in the runtime; do not define Pebble service commands like
 
 ## Read-only root filesystems, volumes and security
 
-Pebble uses `/var/lib/pebble/default/layers/` for its *immutable* configuration layers, and `/tmp/.pebble.socket` for its runtime control socket. `PEBBLE_PERSIST=never` keeps Pebble state in memory so a read-only root filesystem can be used without writing state into `/var/lib/pebble/default`. A writable `/tmp` is **required**. The Pebble configuration directory is owned by UID 584792 and mode `0700`.
+Pebble loads its configuration layers into `/var/lib/pebble/default/layers/` at startup and uses `/tmp/.pebble.socket` for its runtime control socket. `PEBBLE_PERSIST=never` prevents on-disk state persistence but does **not** remove the requirement for `$PEBBLE` to be writable. When using `--read-only`, mount a private tmpfs at `/var/lib/pebble/default` with UID/GID `584792` and mode `0700`, in addition to a writable `/tmp`. The immutable service layers live under `/usr/share/pebble/layers/`; `PEBBLE_COPY_ONCE=/usr/share/pebble` seeds those layers into the writable directory at startup. The image keeps `/var/lib/pebble/default` empty so this initial copy works even without a tmpfs mount.
 
 ```bash
 docker run --rm -d --name my-node-rock \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges \
   --tmpfs /tmp:rw,nosuid,nodev,size=16m,mode=1777 \
+  --tmpfs /var/lib/pebble/default:rw,nosuid,nodev,size=16m,uid=584792,gid=584792,mode=0700 \
   -p 3000:3000 my-node-rock
 
 docker exec my-node-rock pebble health
@@ -163,18 +164,18 @@ docker stop my-node-rock
 
 The final image has no shell or package manager. The image's UID is non-root in both the base runtime and the app layer, including the supervising Pebble process. The Pebble API is on a Unix socket only; no unauthenticated TCP Pebble API is enabled. Do not add untrusted processes using the same runtime UID, as they may be able to access the Pebble Unix socket.
 
-If you use a Kubernetes `readOnlyRootFilesystem` policy, mount a writable `emptyDir` (preferably memory-backed) at `/tmp`, keep `runAsUser` and `runAsGroup` set to `584792`, and test effective ownership/permissions of the mounted volume. Provide app-writable directories explicitly when needed.
+If you use Kubernetes `readOnlyRootFilesystem: true`, provide writable `emptyDir` volumes (preferably `medium: Memory`) at **both** `/tmp` and `/var/lib/pebble/default`. Kubernetes `emptyDir` mounts may default to root ownership; set `runAsUser` and `runAsGroup` to `584792` and arrange ownership/mode `0700` for Pebble (for example, using an appropriate volume-permission init container or a compatible `fsGroup`/CSI policy). Do not hide `/usr/share/pebble/layers`, since those files provide the immutable configuration. Provide any additional app-writable directories explicitly.
 
 ### What CI validates
 
-For both `linux/amd64` and `linux/arm64`, with **read-only rootfs**, no Linux capabilities and `/tmp` tmpfs:
+For both `linux/amd64` and `linux/arm64`, with **read-only rootfs**, no Linux capabilities and writable tmpfs mounts at `/tmp` and `/var/lib/pebble/default`:
 
 - `pebble enter version`, `plan` and `exec node --version` work.
 - Node major `24`, expected CPU architecture, Ubuntu 24.04 and CA trust files are present.
 - Pebble is PID 1, UID/GID is 584792, `/tmp` is mode `1777`, shell/apt/npm are absent.
 - A mounted, real Pebble service layer starts a Node HTTP server. Pebble reports the running service, a readiness check succeeds, and the HTTP endpoint is reachable from inside the container.
 
-The test application and Pebble layer are in `tests/pebble/`; they are test-only and **not baked into the base image**.
+The test application and Pebble layer are in `tests/pebble/`; they are test-only and **not baked into the base image**. CI mounts the test layer into the immutable seed directory and verifies that `PEBBLE_COPY_ONCE` makes it available to the running Pebble daemon.
 
 ## Software supply chain notes
 
